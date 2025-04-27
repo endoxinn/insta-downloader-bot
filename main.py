@@ -1,6 +1,7 @@
 import os
 import io
 import time
+import re  # добавил сюда
 import requests
 from dotenv import load_dotenv
 import telebot
@@ -135,6 +136,12 @@ def handle_buttons(message):
 
 def download_instagram_content(message):
     user_id = message.from_user.id
+    url = message.text.strip()
+
+    # Проверка: является ли это ссылкой на Instagram
+    if not re.match(r'https?://(www\.)?(instagram\.com|instagr\.am)/', url):
+        bot.send_message(message.chat.id, "❌ Это не ссылка на Instagram! Пожалуйста, отправьте корректную ссылку на пост, Reels или Story.")
+        return
 
     if user_data[user_id]['downloads'] >= FREE_DOWNLOADS:
         if not check_subscription(user_id):
@@ -147,17 +154,35 @@ def download_instagram_content(message):
                 reply_markup=markup)
             return
 
-    url = message.text.strip()
     loading_msg = bot.send_message(message.chat.id, "🔍 Загружаю 0%...")
 
     try:
         bot.edit_message_text("⏳ Загружаю 25%...", chat_id=message.chat.id, message_id=loading_msg.message_id)
+
         media_pk = cl.media_pk_from_url(url)
         media_info = cl.media_info(media_pk)
 
         bot.edit_message_text("⏳ Загружаю 50%...", chat_id=message.chat.id, message_id=loading_msg.message_id)
 
-        if '/stories/' in url:
+        if '/stories/highlights/' in url:
+            highlight = cl.highlight_info(media_pk)
+            media_group = []
+
+            for item in highlight.items:
+                file_url = item.video_url or item.thumbnail_url
+                is_video = bool(item.video_url)
+
+                response = requests.get(file_url, timeout=10)
+                file_bytes = io.BytesIO(response.content)
+                file_bytes.name = 'file.mp4' if is_video else 'file.jpg'
+
+                media = types.InputMediaVideo(file_bytes) if is_video else types.InputMediaPhoto(file_bytes)
+                media_group.append(media)
+
+            if media_group:
+                bot.send_media_group(message.chat.id, media_group[:10])
+
+        elif '/stories/' in url:
             story = cl.story_info(media_pk)
             if story.video_url:
                 send_file_from_url(story.video_url, message.chat.id, is_video=True)
@@ -181,16 +206,25 @@ def download_instagram_content(message):
                     bot.send_message(message.chat.id, "❌ Не удалось скачать видео.")
 
             elif media_info.media_type == 8:  # Альбом
+                media_group = []
+
                 for res in media_info.resources:
-                    if res.video_url:
-                        send_file_from_url(res.video_url, message.chat.id, is_video=True)
-                    elif res.thumbnail_url:
-                        send_file_from_url(res.thumbnail_url, message.chat.id, is_video=False)
+                    file_url = res.video_url or res.thumbnail_url
+                    is_video = bool(res.video_url)
+
+                    response = requests.get(file_url, timeout=10)
+                    file_bytes = io.BytesIO(response.content)
+                    file_bytes.name = 'file.mp4' if is_video else 'file.jpg'
+
+                    media = types.InputMediaVideo(file_bytes) if is_video else types.InputMediaPhoto(file_bytes)
+                    media_group.append(media)
+
+                if media_group:
+                    bot.send_media_group(message.chat.id, media_group[:10])
 
             else:
                 bot.send_message(message.chat.id, "❌ Этот тип медиа пока не поддерживается.")
 
-        # Успешная загрузка
         user_data[user_id]['downloads'] += 1
         bot.edit_message_text("✅ Загружено!", chat_id=message.chat.id, message_id=loading_msg.message_id)
 
